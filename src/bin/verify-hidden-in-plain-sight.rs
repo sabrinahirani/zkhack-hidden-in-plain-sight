@@ -43,9 +43,54 @@ fn main() {
 
     let (setup, accts, cha_1, cha_2, commt, opn_1, opn_2) = read_cha_from_file();
 
-    // Replace with the solution polynomial, derived from the account!
-    let solution_blinded_acct = DensePolynomial::from_coefficients_vec(vec![]);
+    let mut solution_commitment = G1Affine::zero();
+    let number_of_accts = 1000usize;
+    let domain: GeneralEvaluationDomain<Fr> =
+        GeneralEvaluationDomain::new(number_of_accts + 2).unwrap();
 
-    let solution_commitment = kzg_commit(&solution_blinded_acct, &setup);
+    // Solution:
+    // To find the right account we iterated over all accts, we then saw that accts[535] solves it!
+    for (i, evals_p) in accts.iter().enumerate() {
+        // We compute P_a(x)
+        let p = DensePolynomial::from_coefficients_vec(domain.ifft(evals_p));
+        
+        // Evaluate it at z_1,z_2
+        let p_cha_1: Fr = p.evaluate(&cha_1);
+        let p_cha_2: Fr = p.evaluate(&cha_2);
+        
+        // Here we just set up the 2 equations with 2 unknowns
+        let e_cha_1 = opn_1 - p_cha_1;
+        let e_cha_2 = opn_2 - p_cha_2;
+        const N: u64 = 1024u64;
+        
+        // We compute b_0, b_1
+        let b_1 = ((e_cha_1 / (cha_1.pow(&[N]) - Fr::from(1)))
+            - (e_cha_2 / (cha_2.pow(&[N]) - Fr::from(1))))
+            / (cha_1 - cha_2);
+        let b_0 = (e_cha_1 / (cha_1.pow(&[N]) - Fr::from(1))) - (b_1 * cha_1);
+
+        // We set Q(x) = P(x) since most of the coeffients are the same
+        let mut q = vec![Fr::from(0); 1026];
+        p.coeffs
+            .iter()
+            .enumerate()
+            .for_each(|(idx, f)| q[idx] = f.clone());
+        
+        // We compute q_0,q_1,q_1024,q_1025
+        q[0] -= b_0;           // q[0] = p[0] - b_0
+        q[1] -= b_1;           // q[1] = p[1] - b_1
+        q[1024] = b_0.clone();
+        q[1025] = b_1.clone();
+        
+        // We compute comm(Q(x)) and check if it's equal to the given commitment
+        let dp = DensePolynomial::from_coefficients_vec(q);
+        solution_commitment = kzg_commit(&dp, &setup);
+        if (solution_commitment == commt) {
+            println!("Found matching account at index {i}");
+            break;
+        }
+    }
+
     assert_eq!(solution_commitment, commt);
 }
+
